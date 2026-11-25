@@ -79,7 +79,9 @@ type Queue = {
  * keeps no per-item removal, so its queue is taken out and put back in order: only inputs still in
  * it go back; one pi already took (in flight, not yet announced) is in neither list, is not added
  * twice, and switching it reports false. Anything pi held that is not matched (another source, or
- * text a skill command expanded) goes back to its own queue unchanged.
+ * text a skill command expanded) goes back to its own queue unchanged. Each queue is restored in
+ * the order clearQueue returned it, and the switched input joins its new queue after the inputs
+ * already there.
  */
 export async function requeue(
   additions: SessionAdditions,
@@ -88,21 +90,29 @@ export async function requeue(
   mode: "steer" | "followUp",
 ): Promise<boolean> {
   const cleared = session.clearQueue();
-  const left = { steer: [...cleared.steering], followUp: [...cleared.followUp] };
-  const back: Input[] = [];
+  // A tracked entry keeps its native slot; an unmatched entry stays where it was; the
+  // switched entry joins its new queue last.
+  const lists = {
+    steer: cleared.steering.map((text) => ({ text })),
+    followUp: cleared.followUp.map((text) => ({ text })),
+  };
   let switched = false;
+  let moved: Input | undefined;
   for (const [key, input] of additions.queued) {
-    const at = left[input.mode].indexOf(input.text);
+    const list = lists[input.mode];
+    const at = list.findIndex((entry) => entry.text === input.text);
     if (at < 0) continue;
-    left[input.mode].splice(at, 1);
     if (key === id) {
+      list.splice(at, 1);
       input.mode = mode;
       switched = true;
+      moved = input;
+    } else {
+      list[at] = input;
     }
-    back.push(input);
   }
-  for (const text of left.steer) await session.steer(text);
-  for (const text of left.followUp) await session.followUp(text);
-  for (const input of back) await session[input.mode](input.text, input.images);
+  if (moved) lists[mode].push(moved);
+  for (const input of lists.steer) await session.steer(input.text, input.images);
+  for (const input of lists.followUp) await session.followUp(input.text, input.images);
   return switched;
 }

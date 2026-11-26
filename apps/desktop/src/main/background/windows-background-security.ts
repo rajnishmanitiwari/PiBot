@@ -97,10 +97,17 @@ export function windowsBackgroundSecurityScript(input: Input) {
     "  if ($newFile -and $ownerSid -ne $sid.Value) { $acl.SetOwner($sid); [IO.File]::SetAccessControl($path, $acl); Assert-Private $path }",
     "}",
     "if ($operation -eq 'owner') {",
-    // MSFT_NetTCPConnection.State 2 = Listen; the same CIM class Get-NetTCPConnection reads.
-    "  $listener = @(([Management.ManagementObjectSearcher]::new('root\\StandardCimv2', \"SELECT OwningProcess FROM MSFT_NetTCPConnection WHERE State = 2 AND LocalAddress = '127.0.0.1' AND LocalPort = $port\")).Get())",
+    // State is deliberately not filtered: on some Windows builds the OS reports a listening
+    // socket with a wrong or empty State (0, 1, 6, or unmapped), so a `State = 2` predicate
+    // matches 0 rows even though the socket is listening and accepting connections. A row
+    // for this port owned by the process proves the bound socket; the State column is not
+    // identity evidence. Rows owned by anyone else (e.g. a TIME_WAIT leftover from a dead
+    // predecessor) are tolerated as long as one row is ours; the token-authenticated
+    // handshake in connectBackground remains the identity proof.
+    "  $listener = @(([Management.ManagementObjectSearcher]::new('root\\StandardCimv2', \"SELECT OwningProcess FROM MSFT_NetTCPConnection WHERE LocalAddress = '127.0.0.1' AND LocalPort = $port\")).Get())",
     "  if ($listener.Count -eq 0) { throw 'listener_missing' }",
-    "  if ($listener.Count -ne 1 -or [int]$listener[0]['OwningProcess'] -ne $processId) { throw 'listener_identity_changed' }",
+    "  $owned = @($listener | Where-Object { [int]$_['OwningProcess'] -eq $processId })",
+    "  if ($owned.Count -eq 0) { throw 'listener_identity_changed' }",
     "  $proc = [Management.ManagementObject]::new(\"root\\cimv2:Win32_Process.Handle='$processId'\")",
     "  try { $proc.Get() } catch { throw 'process_identity_changed' }",
     "  if ([string]$proc['ExecutablePath'] -ine $executable -or [int]$proc['SessionId'] -ne [Diagnostics.Process]::GetCurrentProcess().SessionId) { throw 'process_identity_changed' }",

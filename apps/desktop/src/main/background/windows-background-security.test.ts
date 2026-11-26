@@ -30,23 +30,40 @@ describe("windowsBackgroundSecurityScript owner check", () => {
     expect(script).toContain("if ($owned.Count -eq 0) { throw 'listener_identity_changed' }");
   });
 
+  it("rejects a listener row owned by another process", () => {
+    const script = ownerScript();
+    expect(script).toContain(
+      "$foreign = @($listener | Where-Object { $p = [int]$_['OwningProcess']; $p -ne $processId -and $p -ne 0 -and $p -ne 4 })",
+    );
+    expect(script).toContain("if ($foreign.Count -gt 0) { throw 'listener_identity_changed' }");
+  });
+
+  it("tolerates rows owned by the System Idle/System process", () => {
+    // A TIME_WAIT leftover from a dead predecessor is reported under PID 0 or 4.
+    expect(ownerScript()).toContain("$p -ne 0 -and $p -ne 4");
+  });
+
   it("still reports a missing listener when the query returns no rows", () => {
     expect(ownerScript()).toContain("if ($listener.Count -eq 0) { throw 'listener_missing' }");
   });
 
-  it("checks ownership in order: rows exist, then one is owned by the process", () => {
+  it("checks ownership in order: rows exist, then no foreign row, then one is owned by the process", () => {
     // The script is one static program carrying every branch, so the order of the lines
     // inside the owner block is what pins the logic.
     const script = ownerScript();
     const query = script.indexOf("SELECT OwningProcess FROM MSFT_NetTCPConnection");
     const missing = script.indexOf("if ($listener.Count -eq 0) { throw 'listener_missing' }");
+    const foreign = script.indexOf(
+      "if ($foreign.Count -gt 0) { throw 'listener_identity_changed' }",
+    );
     const owned = script.indexOf(
       "$owned = @($listener | Where-Object { [int]$_['OwningProcess'] -eq $processId })",
     );
     const changed = script.indexOf("if ($owned.Count -eq 0) { throw 'listener_identity_changed' }");
     expect(query).toBeGreaterThan(-1);
     expect(missing).toBeGreaterThan(query);
-    expect(owned).toBeGreaterThan(missing);
+    expect(foreign).toBeGreaterThan(missing);
+    expect(owned).toBeGreaterThan(foreign);
     expect(changed).toBeGreaterThan(owned);
   });
 

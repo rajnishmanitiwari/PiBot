@@ -101,11 +101,15 @@ export function windowsBackgroundSecurityScript(input: Input) {
     // socket with a wrong or empty State (0, 1, 6, or unmapped), so a `State = 2` predicate
     // matches 0 rows even though the socket is listening and accepting connections. A row
     // for this port owned by the process proves the bound socket; the State column is not
-    // identity evidence. Rows owned by anyone else (e.g. a TIME_WAIT leftover from a dead
-    // predecessor) are tolerated as long as one row is ours; the token-authenticated
+    // identity evidence. A row owned by another process is still rejected: the client sends
+    // its token as the first message, so a second listener on the same loopback port would
+    // otherwise receive it. Only the System Idle/System process (0 or 4) is tolerated, since
+    // a TIME_WAIT leftover from a dead predecessor is reported under it. The token-authenticated
     // handshake in connectBackground remains the identity proof.
     "  $listener = @(([Management.ManagementObjectSearcher]::new('root\\StandardCimv2', \"SELECT OwningProcess FROM MSFT_NetTCPConnection WHERE LocalAddress = '127.0.0.1' AND LocalPort = $port\")).Get())",
     "  if ($listener.Count -eq 0) { throw 'listener_missing' }",
+    "  $foreign = @($listener | Where-Object { $p = [int]$_['OwningProcess']; $p -ne $processId -and $p -ne 0 -and $p -ne 4 })",
+    "  if ($foreign.Count -gt 0) { throw 'listener_identity_changed' }",
     "  $owned = @($listener | Where-Object { [int]$_['OwningProcess'] -eq $processId })",
     "  if ($owned.Count -eq 0) { throw 'listener_identity_changed' }",
     "  $proc = [Management.ManagementObject]::new(\"root\\cimv2:Win32_Process.Handle='$processId'\")",
